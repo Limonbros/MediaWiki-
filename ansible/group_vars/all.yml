@@ -1,0 +1,102 @@
+db_primary_ip: "192.168.56.10"
+mediawiki_1_ip: "192.168.56.12"
+
+# --- MediaWiki ---
+mediawiki_version: "1.42.1"
+mediawiki_download_url: "https://releases.wikimedia.org/mediawiki/1.42/mediawiki-{{ mediawiki_version }}.tar.gz"
+
+mediawiki_install_dir: /var/www/mediawiki
+mediawiki_owner: www-data
+mediawiki_group: www-data
+
+
+mediawiki_server_url: "http://{{ mediawiki_1_ip }}"
+
+# Параметры для maintenance/install.php
+mediawiki_db_type: "postgres"
+mediawiki_db_host: "{{ db_primary_ip }}"
+mediawiki_db_port: "{{ postgres_port | default(5432) }}"
+mediawiki_db_name: "{{ wiki_db }}"
+mediawiki_db_user: "{{ wiki_user }}"
+mediawiki_db_password: "{{ wiki_password }}"
+
+mediawiki_site_name: "Корпоративная Wiki"
+mediawiki_admin_user: "admin"
+mediawiki_admin_password: "StrongPassword123!"
+mediawiki_language: "ru"
+
+# --- PostgreSQL ---
+postgres_version: 14
+postgres_cluster: main
+postgres_port: 5432
+
+replication_user: replicator
+replication_password: replicatorpassword
+
+wiki_db: my_wiki
+wiki_user: wikiuser
+wiki_password: wikiuserpassword
+
+pg_data_dir: "/var/lib/postgresql/{{ postgres_version }}/{{ postgres_cluster }}"
+pg_conf_dir: "/etc/postgresql/{{ postgres_version }}/{{ postgres_cluster }}"
+
+# Пакеты для PostgreSQL 
+postgresql_packages:
+  - postgresql
+  - postgresql-client-{{ postgres_version }}
+  - acl
+  - python3-psycopg2
+
+# --- Web / PHP (для MediaWiki) ---
+nginx_packages:
+  - nginx
+
+php_packages:
+  - php
+  - php-fpm
+  - php-intl
+  - php-mbstring
+  - php-xml
+  - php-apcu
+  - php-curl
+  - php-pgsql
+  - php-cli
+  - php-zip
+  - php-gd
+
+# --- Backup packages 
+backup_packages:
+  - openssh-client
+  - cron
+  - gzip
+  - tar
+
+# --- Zabbix base dependencies 
+zabbix_base_packages:
+  - nginx
+  - php-fpm
+  - php-pgsql
+  - php-mbstring
+  - php-gd
+  - php-xml
+  - php-bcmath
+  - php-ldap
+  - php-curl
+  - php-zip
+  - php-intl
+  - postgresql
+  - acl
+  - python3-psycopg2
+  - python3-requests
+  - wget
+
+# --- Zabbix server packages 
+zabbix_server_packages:
+  - zabbix-server-pgsql
+  - zabbix-frontend-php
+  - zabbix-sql-scripts
+  - zabbix-agent
+
+# --- Zabbix agent packages 
+zabbix_agent_packages:
+  - zabbix-agent

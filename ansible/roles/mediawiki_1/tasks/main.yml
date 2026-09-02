@@ -1,0 +1,215 @@
+---
+# 1. Сначала ставим PostgreSQL (создаёт пользователя postgres)
+- name: Install PostgreSQL server and client
+  ansible.builtin.apt:
+    name:
+      - postgresql
+      - postgresql-contrib
+    state: present
+    update_cache: true
+  become: true
+
+# 2. Сразу после установки включаем и запускаем PostgreSQL
+- name: Ensure PostgreSQL is started and enabled
+  ansible.builtin.service:
+    name: postgresql
+    state: started
+    enabled: true
+  become: true
+
+# ----------------------------------------------------------------------
+# Дальше идут твои задачи (Nginx, PHP и т.д.)
+# ----------------------------------------------------------------------
+
+- name: Install Nginx and PHP packages
+  ansible.builtin.apt:
+    name: "{{ nginx_packages + php_packages }}"
+    state: present
+    update_cache: true
+  become: true
+
+- name: Ensure Nginx is started and enabled
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true
+  become: true
+
+- name: Ensure PHP-FPM is started and enabled
+  ansible.builtin.service:
+    name: "{{ php_fpm_service }}"
+    state: started
+    enabled: true
+  become: true
+
+# Теперь можно проверять порт БД (но это опционально, если pg_isready будет работать)
+- name: Wait for PostgreSQL TCP port on primary
+  ansible.builtin.wait_for:
+    host: "{{ mediawiki_db_host }}"
+    port: "{{ mediawiki_db_port | default(5432) }}"
+    delay: 5
+    timeout: 180
+    msg: "PostgreSQL TCP port is not reachable yet. Check network, security groups, listen_addresses and pg_hba.conf."
+  when: mediawiki_run_installer | bool
+
+# Проверка через pg_isready — теперь безопасно: postgres уже есть
+- name: Wait for PostgreSQL to be ready for connections (via pg_isready)
+  become: true
+  become_user: postgres
+  environment:
+    PGDATA: "/var/lib/postgresql/{{ postgres_version | default('14') }}/{{ postgres_cluster | default('main') }}"
+  ansible.builtin.shell: pg_isready -h "{{ mediawiki_db_host }}" -p "{{ mediawiki_db_port | default(5432) }}"
+  register: pg_ready
+  retries: 36
+  delay: 5
+  until: pg_ready.rc == 0
+  changed_when: false
+  failed_when: pg_ready.rc != 0
+  when: mediawiki_run_installer | bool
+
+# Дальше — твои задачи по MediaWiki (архив, распаковка, конфиги, установка и т.п.)
+- name: Download MediaWiki archive
+  ansible.builtin.get_url:
+    url: "{{ mediawiki_download_url }}"
+    dest: "{{ mediawiki_archive_path }}"
+    mode: "0644"
+  become: true
+
+- name: Extract MediaWiki release
+  ansible.builtin.unarchive:
+    src: "{{ mediawiki_archive_path }}"
+    dest: "{{ mediawiki_extract_parent }}"
+    remote_src: true
+    creates: "{{ mediawiki_release_dir }}"
+  become: true
+
+- name: Create symlink to MediaWiki install dir
+  ansible.builtin.file:
+    src: "{{ mediawiki_release_dir }}"
+    dest: "{{ mediawiki_install_dir }}"
+    state: link
+    force: true
+  become: true
+
+- name: Set ownership on MediaWiki files
+  ansible.builtin.file:
+    path: "{{ mediawiki_release_dir }}"
+    owner: "{{ mediawiki_owner }}"
+    group: "{{ mediawiki_group }}"
+    recurse: true
+  become: true
+
+- name: Deploy Nginx config for MediaWiki
+  ansible.builtin.template:
+    src: mediawiki.nginx.conf.j2
+    dest: "/etc/nginx/sites-available/mediawiki.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart nginx
+
+- name: Enable MediaWiki Nginx site
+  ansible.builtin.file:
+    src: "/etc/nginx/sites-available/mediawiki.conf"
+    dest: "/etc/nginx/sites-enabled/mediawiki.conf"
+    state: link
+    force: true
+  notify: Restart nginx
+
+- name: Disable default Nginx site
+  ansible.builtin.file:
+    path: "/etc/nginx/sites-enabled/default"
+    state: absent
+  notify: Restart nginx
+
+- name: Apply service restarts
+  ansible.builtin.meta: flush_handlers
+
+- name: Check if MediaWiki already installed
+  ansible.builtin.stat:
+    path: "{{ mediawiki_install_dir }}/LocalSettings.php"
+  register: mediawiki_localsettings
+
+- name: Run MediaWiki console installer
+  ansible.builtin.command:
+    argv:
+      - php
+      - maintenance/install.php
+      - --dbtype
+      - "{{ mediawiki_db_type }}"
+      - --dbserver
+      - "{{ mediawiki_db_host }}"
+      - --dbport
+      - "{{ mediawiki_db_port | default(5432) }}"
+      - --dbname
+      - "{{ mediawiki_db_name }}"
+      - --dbuser
+      - "{{ mediawiki_db_user }}"
+      - --dbpass
+      - "{{ mediawiki_db_password }}"
+      - --scriptpath
+      - ""
+      - --server
+      - "{{ mediawiki_server_url }}"
+      - --lang
+      - "{{ mediawiki_language }}"
+      - --pass
+      - "{{ mediawiki_admin_password }}"
+      - "{{ mediawiki_site_name }}"
+      - "{{ mediawiki_admin_user }}"
+    chdir: "{{ mediawiki_install_dir }}"
+  when:
+    - not mediawiki_localsettings.stat.exists
+    - mediawiki_run_installer | bool
+  register: mediawiki_install_result
+  changed_when: not mediawiki_localsettings.stat.exists
+  failed_when: "'Installation complete' not in mediawiki_install_result.stderr and 'Installation complete' not in mediawiki_install_result.stdout"
+  become: true
+
+- name: Set strict permissions on LocalSettings.php
+  ansible.builtin.file:
+    path: "{{ mediawiki_install_dir }}/LocalSettings.php"
+    owner: "{{ mediawiki_owner }}"
+    group: "{{ mediawiki_group }}"
+    mode: "0600"
+  when: mediawiki_localsettings.stat.exists or (mediawiki_install_result is changed)
+  become: true
+
+- name: Wait for HTTP on MediaWiki host
+  ansible.builtin.wait_for:
+    host: "127.0.0.1"
+    port: 80
+    delay: 2
+    timeout: 60
+    msg: "Nginx/MediaWiki HTTP port 80 is not ready yet"
+
+- name: Check that LocalSettings.php exists
+  ansible.builtin.stat:
+    path: "{{ mediawiki_install_dir }}/LocalSettings.php"
+  register: final_localsettings
+
+- name: Fail if LocalSettings.php was not created
+  ansible.builtin.fail:
+    msg: "MediaWiki installation failed: LocalSettings.php not found. Check logs of the install.php task."
+  when:
+    - mediawiki_run_installer | bool
+    - not final_localsettings.stat.exists
+
+- name: Check MediaWiki main page (follow redirects)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1/"
+    method: GET
+    status_code: 200
+    return_content: true
+    follow_redirects: all
+  register: mediawiki_http_check
+  when: final_localsettings.stat.exists
+
+- name: Verify MediaWiki is running (check final page content)
+  ansible.builtin.assert:
+    that:
+      - mediawiki_http_check.status == 200
+      - "'MediaWiki успешно установлена' in mediawiki_http_check.content"
+    fail_msg: "HTTP check passed status code, but response does not look like MediaWiki."
+    success_msg: "MediaWiki is installed and reachable."
+  when: final_localsettings.stat.exists

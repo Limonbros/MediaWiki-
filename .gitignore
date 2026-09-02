@@ -1,0 +1,16 @@
+.terraform/
+*.tfstate
+*.tfstate.backup
+.vagrant/
+*.retry
+.env
+secrets/
+keys/
+*.key
+id_rsa
+id_ed25519
+inventory.py
+hosts
+*.log
+__pycache__/
+*.pyc
